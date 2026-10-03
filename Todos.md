@@ -3,7 +3,7 @@
 ## Stages
 
 - [x] Setup UDP server
-- [ ] Write header section
+- [x] Write header section
 - [ ] Write question section
 - [ ] Write answer section
 - [ ] Parse header section

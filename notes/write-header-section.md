@@ -43,10 +43,28 @@
             - authority +
             - space
         - integers are in big-endian (stores most significant bit first) format
-    - questions
-        - review repo `nand2tetris` Hack Assembler Python program for how to import the testing library and write unit / integration tests with `assert` statement
 - PEDAC: Examples
-    - TODO
+    - ex1. test running DNS server
+        - in terminal 1:
+            ```
+            sh your_program.sh
+            ```
+        - in terminal 2:
+            ```
+            dig @127.0.0.1 -p 2053 +noedns codecrafters.io
+
+            ; <<>> DiG 9.18.39-0ubuntu0.24.04.7-Ubuntu <<>> @127.0.0.1 -p 2053 +noedns codecrafters.io
+            ; (1 server found)
+            ;; global options: +cmd
+            ;; Got answer:
+            ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 32963
+            ;; flags: qr; QUERY: 0, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 0
+
+            ;; Query time: 0 msec
+            ;; SERVER: 127.0.0.1#2053(127.0.0.1) (UDP)
+            ;; WHEN: Sat Oct 03 14:17:52 PDT 2026
+            ;; MSG SIZE  rcvd: 12
+            ```
 - PEDAC: Data Structures And Algorithms
     - set `buffer` to data of UDP packet received from a sender client
     - get `packet_id` int field from header of `buffer` DNS message
