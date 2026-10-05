@@ -5,6 +5,7 @@ import socket
 #
 HOST = "127.0.0.1"
 PORT = 2053
+HEADER_BYTES = 12
 
 def int_to_binary_str(integer: int, bits_length: int = 0) -> str:
     if type(bits_length) != int or bits_length < 0:
@@ -54,6 +55,7 @@ class DNSMessage:
             # additional record count (16 bits)
             "ARCOUNT": 0
         }
+        self.questions_bytes = b''
 
         for field, integer in options.items():
             if not (field in self.header) or type(integer) != int:
@@ -103,50 +105,97 @@ class DNSMessage:
             ANCOUNT_bytes + NSCOUNT_bytes + ARCOUNT_bytes
         )
 
+    def set_questions_bytes(self, questions_bytes: bytes) -> None:
+        self.questions_bytes = questions_bytes
+
     @staticmethod
-    def udp_bytes_to_dns_header(udp_packet: bytes) -> dict[str, int]:
+    def header_entries(dns_message_bytes: bytes) -> dict[str, int]:
         res = {}
-        res["ID"] = int.from_bytes(udp_packet[:2], byteorder='big')
+        res["ID"] = int.from_bytes(dns_message_bytes[:2], byteorder='big')
 
         # TODO: extract flag bytes from bytes 3 and 4
 
-        res["QDCOUNT"] = int.from_bytes(udp_packet[4:6], byteorder='big')
-        res["ANCOUNT"] = int.from_bytes(udp_packet[6:8], byteorder='big')
-        res["NSCOUNT"] = int.from_bytes(udp_packet[8:10], byteorder='big')
-        res["ARCOUNT"] = int.from_bytes(udp_packet[10:12], byteorder='big')
+        res["QDCOUNT"] = int.from_bytes(dns_message_bytes[4:6], byteorder='big')
+        res["ANCOUNT"] = int.from_bytes(dns_message_bytes[6:8], byteorder='big')
+        res["NSCOUNT"] = int.from_bytes(dns_message_bytes[8:10], byteorder='big')
+        res["ARCOUNT"] = int.from_bytes(dns_message_bytes[10:12], byteorder='big')
 
         return res
+    
+    # TODO: to test for question sections with 2+ (question) entries
+    @staticmethod
+    def questions_end_pos(dns_message_bytes: bytes) -> int:
+        dns_message_bytes_length = len(dns_message_bytes)
+        if dns_message_bytes_length <= HEADER_BYTES:
+            print("Error: DNS message has header only")
+            return -1
+        
+        i = HEADER_BYTES
+        res = i
+        while i < dns_message_bytes_length:
+            # print(f"At pos {i}, at byte '{dns_message_bytes[i]}'")
+
+            # In question section, reached end of last entry (null byte)
+            # Last entry is followed by 4 bytes = `QTYPE` (2 bytes) + `QCLASS` (2 bytes)
+            if dns_message_bytes[i:i + 1] == b'\x00':
+                # print("At DNS message questions section end")
+                # print(f"Last 4 bytes: '{dns_message_bytes[i + 1:i + 5]}")
+
+                # Question section's last 3 bytes = `QNAME` (2 bytes) + `QTYPE` (1 byte)
+                res = i + 4
+                break
+
+            subname_length = int.from_bytes(dns_message_bytes[i:i + 1], byteorder='big')
+            # print("==> Go to next label start pos")
+            # print(f"Chars in next subname: {subname_length}")
+            # print(f"Subname: '{dns_message_bytes[i + 1:i + subname_length + 1].decode()}'")
+            i = i + subname_length + 1
+
+        return res
+
+    @staticmethod
+    def questions_from_bytes(dns_message_bytes: bytes) -> bytes:
+        if len(dns_message_bytes) < HEADER_BYTES:
+            return b''
+        end_pos = DNSMessage.questions_end_pos(dns_message_bytes)
+        return dns_message_bytes[HEADER_BYTES:end_pos + 1]
 
 def main():
     udp_socket: socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp_socket.bind((HOST, PORT))
 
-    print(f"DNS Server running at {HOST}:{PORT}")
+    print(f"==> DNS Server running at {HOST}:{PORT}")
     
     while True:
-        try:
-            # `buffer`: bytes
-            # `source`: (host: string, port: integer) because is a AF_INET socket (IPv4)
-            buffer, source = udp_socket.recvfrom(512)
-    
-            query_header: dict[str, int] = DNSMessage.udp_bytes_to_dns_header(buffer)
-            print(f"Received DNS message with packet ID: {query_header["ID"]}")
+        # try:
+        #     pass
+        # except Exception as e:
+        #     print(f"Error receiving data: {e}")
+        #     break
+        
+        # `buffer`: bytes
+        # `source`: (host: string, port: integer) because is a AF_INET socket (IPv4)
+        buffer, source = udp_socket.recvfrom(512)
 
-            dns_message_reply = DNSMessage()
-            dns_message_reply.set_header({ "ID": query_header["ID"], "QR": 1 })
-            # print(f"DNS message reply header: {dns_message_reply.header}")
+        query_header: dict[str, int] = DNSMessage.header_entries(buffer)
+        print(f"==> Received DNS message ({len(buffer)} bytes) with ID {query_header["ID"]}")
 
-            response = dns_message_reply.header_bytes()
+        dns_reply = DNSMessage()
+        dns_reply_options = query_header
+        dns_reply_options["QR"] = 1
+        dns_reply.set_header(dns_reply_options)
+        print(f"==> DNS message reply header: {dns_reply.header}")
 
-            # DNS message header should be 12 bytes
-            assert len(response) == 12
-    
-            udp_socket.sendto(response, source)
-            print(f"Sent DNS message reply with header: '{response}'")
+        response: bytes = dns_reply.header_bytes()
 
-        except Exception as e:
-            print(f"Error receiving data: {e}")
-            break
+        if len(buffer) > HEADER_BYTES:
+            questions_bytes = DNSMessage.questions_from_bytes(buffer)
+            dns_reply.set_questions_bytes(questions_bytes)
+            response += dns_reply.questions_bytes
+
+        udp_socket.sendto(response, source)
+        print("==> Sent DNS message reply:")
+        print(response)
 
 if __name__ == "__main__":
     main()

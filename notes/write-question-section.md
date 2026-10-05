@@ -1,0 +1,57 @@
+# Notes:
+
+- PEDAC: Problem
+    - input:
+        - `udp_packet`: UDP packet containing a DNS query packet
+            - sent to DNS server at port (TCP or UDP?) 2053
+    - output:
+        - `dns_reply`: UDP packet containing a DNS reply packet to host machine that sent the DNS server `udp_packet`
+            - only contains DNS header; no DNS body
+    - side effects:
+        - N/A
+    - questions:
+        - how does the program know how many questions (field `QDCOUNT`) the received DNS Message query has?
+            - from the received DNS Message query's `QDCOUNT` value
+        - how does the program know what the question type (field `QTYPE`) is based on the received DNS Message query?
+            - from the received DNS Message query's `QTYPE` value
+        - how does the program know what the question class (field `QCLASS`) is based on the received DNS Message query?
+            - from the received DNS Message query's `QCLASS` value
+    - DNS message
+        - structure (for both requests and replies) =
+            - header (12 bytes) +
+            - question +
+                - = name (field `QNAME`) +
+                    - variable byte length of at least size 2 bytes?
+                    - no byte padding
+                - type (field `QTYPE`) +
+                    - int as 2 bytes
+                    - possible integer values (1-16 inclusive):
+                        - 1 = A; host address
+                        - 5 = CNAME; canonical name for an alias
+                        - ...
+                        - 16 = TXT; text strings
+                - class (field `QCLASS`) +
+                    - int as 2 bytes
+                    - usually = 1
+                    - possible integer values (1-4 inclusive):
+                        - 1 = IN; the Internet
+                        - 2 = CS; the CSNET class (obsolete)
+                        - 3 = CH; the CHAOS class
+                        - 4 = HS; Hesiod
+            - answer +
+            - authority +
+            - space
+        - integers are in big-endian (stores most significant bit first) format
+- PEDAC: Examples
+    - TODO
+- PEDAC: Data Structures And Algorithms
+    - if `udp_packet`'s byte size > a DNS message header (12 bytes),
+        - means `udp_packet` has at least a question section
+        - increment `dns_reply`'s header field `QDCOUNT` by 1
+        - copy the bytes from `udp_packet`'s DNS message query's fields `QNAME`, `QTYPE`, and `QCLASS` to `dns_reply`'s questions fields
+            - find the start index (integer `question_start_pos`) of the question field
+                - DNS message header ends at byte 12 (index 11)
+                - question field starts at byte 13 (index 12 because `udp_packet` is an array of bytes)
+            - find the end index (integer `question_end_pos`) of the question field
+            - copy the bytes 
+    - send `dns_reply` back to the `udp_packet` sender client
