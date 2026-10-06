@@ -6,7 +6,7 @@
 - [x] Write header section
 - [x] Write question section
 - [x] Write answer section
-- [ ] Parse header section
+- [x] Parse header section
 - [ ] Parse question section
 - [ ] Parse compressed packet
 - [ ] Forwarding Server

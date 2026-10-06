@@ -9,14 +9,15 @@ import socket
 HOST = "127.0.0.1"
 PORT = 2053
 HEADER_BYTES = 12
+BUFFER_SIZE = 512
 
 #
 # HELPER FUNCTIONS
 #
-def int_to_binary_str(integer: int, bits_length: int = 0) -> str:
-    if type(bits_length) != int or bits_length < 0:
-        bits_length = 0
-    return format(integer, f"0{bits_length}b")
+def int_to_binary_str(integer: int, bit_length: int = 0) -> str:
+    if type(bit_length) != int or bit_length < 0:
+        bit_length = 0
+    return format(integer, f"0{bit_length}b")
 
 # See RFC 1035 for details: https://www.rfc-editor.org/info/rfc1035/#section-4.1
 class DNSMessage:
@@ -102,27 +103,38 @@ class DNSMessage:
         for field, value in field_to_values.items():
             self.data[field] = value
 
-    def copy_header(self, dns_message: bytes) -> None:
-        data = {}
-        data["ID"] = int.from_bytes(dns_message[:2], byteorder='big')
+    def copy_header(self, dns_query: bytes) -> None:
+        data: dict = {}
+        data["ID"] = int.from_bytes(dns_query[:2], byteorder='big')
 
-        # TODO: extract flag bytes from bytes 3 and 4
+        # Extract flag bits from byte 3 in `dns_query`
+        byte_3 = int.from_bytes(dns_query[2:3], byteorder='big')
+        byte_3_str = int_to_binary_str(byte_3, 8)
+        data["QR"] = 1
+        data["OPCODE"] = int(byte_3_str[1:5], 2)
+        data["AA"] = 0
+        data["TC"] = 0
+        data["RD"] = int(byte_3_str[7:8], 2)
 
-        data["QDCOUNT"] = int.from_bytes(dns_message[4:6], byteorder='big')
-        data["ANCOUNT"] = int.from_bytes(dns_message[6:8], byteorder='big')
+        # Set flag bits for byte 4 in DNS reply
+        data["RA"] = 0
+        data["Z"] = 0
+        data["RCODE"] = 0 if data["OPCODE"] == 0 else 4
+
+        data["QDCOUNT"] = int.from_bytes(dns_query[4:6], byteorder='big')
+        data["ANCOUNT"] = int.from_bytes(dns_query[6:8], byteorder='big')
         data["NSCOUNT"] = int.from_bytes(
-            dns_message[8:10], byteorder='big'
+            dns_query[8:10], byteorder='big'
         )
         data["ARCOUNT"] = int.from_bytes(
-            dns_message[10:12], byteorder='big'
+            dns_query[10:12], byteorder='big'
         )
-        data["QR"] = 1
 
         self.set_data(data)
 
-    def copy_question(self, dns_message: bytes) -> None:
-        dns_message_length = len(dns_message)
-        if dns_message_length <= HEADER_BYTES:
+    def copy_question(self, dns_query: bytes) -> None:
+        dns_query_length = len(dns_query)
+        if dns_query_length <= HEADER_BYTES:
             return
 
         data: dict = { "QDCOUNT": 1 }
@@ -130,25 +142,25 @@ class DNSMessage:
 
         # Traverse bytes in Question section        
         i = HEADER_BYTES
-        while i < dns_message_length:
+        while i < dns_query_length:
 
             # In question section, reached end of last entry (null byte)
             # Last entry is followed by 4 bytes = `QTYPE` (2B) + `QCLASS` (2B)
-            if dns_message[i:i + 1] == b'\x00':
+            if dns_query[i:i + 1] == b'\x00':
                 break
 
-            label_length = int.from_bytes(dns_message[i:i + 1], byteorder='big')
-            domain_labels.append(dns_message[i + 1:i + label_length + 1].decode())
+            label_length = int.from_bytes(dns_query[i:i + 1], byteorder='big')
+            domain_labels.append(dns_query[i + 1:i + label_length + 1].decode())
             i = i + label_length + 1
 
         data["QNAME"] = ".".join(domain_labels)
-        data["QTYPE"] = int.from_bytes(dns_message[i + 1:i + 3], byteorder='big')
-        data["QCLASS"] = int.from_bytes(dns_message[i + 3:i + 5], byteorder='big')
+        data["QTYPE"] = int.from_bytes(dns_query[i + 1:i + 3], byteorder='big')
+        data["QCLASS"] = int.from_bytes(dns_query[i + 3:i + 5], byteorder='big')
 
         self.set_data(data)
 
-    def set_answer(self, dns_message: bytes) -> None:
-        if len(dns_message) <= HEADER_BYTES:
+    def set_answer(self, dns_query: bytes) -> None:
+        if len(dns_query) <= HEADER_BYTES:
             print("Error: DNS message has header only")
             return
 
@@ -195,8 +207,8 @@ class DNSMessage:
             ANCOUNT_bytes + NSCOUNT_bytes + ARCOUNT_bytes
         )
 
-    def question_bytes(self, dns_message_size: int) -> bytes:
-        if dns_message_size <= HEADER_BYTES:
+    def question_bytes(self, dns_query_size: int) -> bytes:
+        if dns_query_size <= HEADER_BYTES:
             return b''
 
         QNAME_bytes = b''
@@ -211,8 +223,8 @@ class DNSMessage:
 
         return (QNAME_bytes + QTYPE_bytes + QCLASS_bytes)
 
-    def answer_bytes(self, dns_message_size: int) -> bytes:
-        if dns_message_size <= HEADER_BYTES:
+    def answer_bytes(self, dns_query_size: int) -> bytes:
+        if dns_query_size <= HEADER_BYTES:
             return b''
 
         NAME_bytes = b''
@@ -254,7 +266,6 @@ class DNSMessage:
             res[key] = self.data[key]
         return res
 
-    # TODO: to test
     def answer_entries(self) -> dict:
         res = {}
         keys = ["NAME", "TYPE", "CLASS", "TTL", "RDLENGTH", "RDATA"]
@@ -265,13 +276,12 @@ class DNSMessage:
 def main():
     udp_socket: socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp_socket.bind((HOST, PORT))
-
     print(f"==> DNS Server running at {HOST}:{PORT}")
     
     while True:
         # `buffer`: bytes
         # `source`: (host: string, port: integer) because is a AF_INET socket (IPv4)
-        buffer, source = udp_socket.recvfrom(512)
+        buffer, source = udp_socket.recvfrom(BUFFER_SIZE)
         dns_reply = DNSMessage()
         dns_reply.copy_header(buffer)
         dns_reply.copy_question(buffer)
