@@ -147,12 +147,22 @@ class DNSMessage:
 
         self.set_data(data)
 
-    # TODO
     def set_answer(self, dns_message: bytes) -> None:
         if len(dns_message) <= HEADER_BYTES:
             print("Error: DNS message has header only")
             return
-        # TODO
+
+        data: dict = {
+            "ANCOUNT": 1,
+            "NAME": str(self.data["QNAME"]),
+            "TYPE": self.data["QTYPE"],
+            "CLASS": self.data["QCLASS"],
+            "TTL": 60,
+            "RDATA": "8.8.8.8"
+        }
+        data["RDLENGTH"] = len(data["RDATA"].split("."))
+
+        self.set_data(data)
 
     def header_bytes(self) -> bytes:
         ID_bytes = self.data["ID"].to_bytes(length=2, byteorder='big')
@@ -201,11 +211,31 @@ class DNSMessage:
 
         return (QNAME_bytes + QTYPE_bytes + QCLASS_bytes)
 
-    # TODO
     def answer_bytes(self, dns_message_size: int) -> bytes:
         if dns_message_size <= HEADER_BYTES:
             return b''
-        return b''
+
+        NAME_bytes = b''
+        domain_labels = self.data["NAME"].split(".")
+        for label in domain_labels:
+            NAME_bytes += len(label).to_bytes(length=1, byteorder='big')
+            NAME_bytes += label.encode()
+        NAME_bytes += b'\0'
+
+        TYPE_bytes = self.data["TYPE"].to_bytes(length=2, byteorder='big')
+        CLASS_bytes = self.data["CLASS"].to_bytes(length=2, byteorder='big')
+        TTL_bytes = self.data["TTL"].to_bytes(length=4, byteorder='big')
+        RDLENGTH_bytes = self.data["RDLENGTH"].to_bytes(length=2, byteorder='big')
+
+        RDATA_bytes = b''
+        ipv4_octets = self.data["RDATA"].split(".")
+        for octet in ipv4_octets:
+            RDATA_bytes += int(octet).to_bytes(length=1, byteorder='big')
+
+        return (
+            NAME_bytes + TYPE_bytes + CLASS_bytes +
+            TTL_bytes + RDLENGTH_bytes + RDATA_bytes
+        )
 
     def header_entries(self) -> dict:
         res = {}
@@ -245,23 +275,19 @@ def main():
         dns_reply = DNSMessage()
         dns_reply.copy_header(buffer)
         dns_reply.copy_question(buffer)
-
-        # TODO
-        # dns_reply.set_answer(buffer)
+        dns_reply.set_answer(buffer)
 
         print("==> DNS message reply header:")
         print(dns_reply.header_entries())
         print("==> DNS message reply question:")
         print(dns_reply.question_entries())
-        # print("==> DNS message reply answer:")
-        # print(dns_reply.question_entries())
+        print("==> DNS message reply answer:")
+        print(dns_reply.answer_entries())
 
         buffer_length = len(buffer)
         response: bytes = dns_reply.header_bytes()
         response += dns_reply.question_bytes(buffer_length)
-
-        # TODO
-        # response += dns_reply.answer_bytes(buffer_length)
+        response += dns_reply.answer_bytes(buffer_length)
 
         udp_socket.sendto(response, source)
         print("==> Sent DNS message reply:")

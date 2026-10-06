@@ -1,0 +1,94 @@
+# Notes:
+
+- PEDAC: Problem
+    - input:
+        - `udp_packet`: UDP packet containing a DNS query packet
+            - sent to DNS server at port (TCP or UDP?) 2053
+    - output:
+        - `dns_reply`: UDP packet containing a DNS reply packet to host machine that sent the DNS server `udp_packet`
+            - only contains DNS header; no DNS body
+    - side effects:
+        - N/A
+    - questions:
+        - how does the program know how many questions (field `QDCOUNT`) the received DNS Message query has?
+            - from the received DNS Message query's `QDCOUNT` value
+        - how does the program know what the question type (field `QTYPE`) is based on the received DNS Message query?
+            - from the received DNS Message query's `QTYPE` value
+        - how does the program know what the question class (field `QCLASS`) is based on the received DNS Message query?
+            - from the received DNS Message query's `QCLASS` value
+    - DNS message
+        - structure (for both requests and replies) =
+            - header (12 bytes) +
+            - question +
+                - = name (field `QNAME`) +
+                    - variable byte length of at least size 4 bytes?
+                    - no byte padding
+                - type (field `QTYPE`) +
+                    - int as 2 bytes
+                    - possible integer values (1-16 inclusive):
+                        - 1 = A; host address
+                        - 5 = CNAME; canonical name for an alias
+                        - ...
+                        - 16 = TXT; text strings
+                - class (field `QCLASS`) +
+                    - int as 2 bytes
+                    - usually = 1
+                    - possible integer values (1-4 inclusive):
+                        - 1 = IN; the Internet
+                        - 2 = CS; the CSNET class (obsolete)
+                        - 3 = CH; the CHAOS class
+                        - 4 = HS; Hesiod
+            - answer +
+                - = name (field `NAME`) +
+                    - variable byte length
+                    - no byte padding (assumed)
+                - type (field `TYPE`) +
+                    - int as 2 bytes (big-endian)
+                    - value copied from question section's field `QTYPE`
+                - type (field `CLASS`) +
+                    - int as 2 bytes (big-endian)
+                    - value copied from question section's field `QCLASS`
+                - TTL (field `TTL`) +
+                    - TTL = time to live
+                    - int as 4 bytes (big-endian)
+                    - set as arbitrary value for now e.g., 60
+                - length (field `RDLENGTH`) +
+                    - int as 2 bytes (big-endian)
+                    - length of `RDATA` field
+                - data (field `RDATA`) +
+                    - int as 4 bytes (big-endian)
+                    - any IPv4 address e.g., `8.8.8.8` -> `\x08\x08\x08\x08`
+            - authority +
+            - space
+        - integers are in big-endian (stores most significant bit first) format
+- PEDAC: Examples
+    - TODO
+- PEDAC: Data Structures And Algorithms
+    - rework `DNSMessage` class to have these fields:
+        - `header`: hashmap of string -> int
+        - `question`: hashmap of string -> (int | string)
+        - `answer`: hashmap of string -> (int | string)
+    - add / rework methods to `DNSMessage` class:
+        - `header_bytes() -> bytes` method:
+            - rework
+        - `question_bytes() -> bytes` method:
+            - todo
+        - `answer_bytes() -> bytes` method:
+            - todo
+    - helper functions:
+        - `ipv4_bytes(ip_address_str: string) -> bytes` function:
+            - todo
+        - `question_entries(dns_message_bytes: bytes) -> dict[string -> (int | string)]` function:
+            - todo
+        - `ipv4_string(ip_address_bytes: bytes) -> string` function:
+            - todo
+    - if `udp_packet`'s byte size > a DNS message header (12 bytes),
+        - means `udp_packet` has at least a question section
+        - increment `dns_reply`'s header field `ANCOUNT` by 1
+        - copy the bytes from `dns_reply`'s question section field `QNAME` to its answer section field `NAME` as variable length bytes
+        - copy the bytes from `dns_reply`'s question section field `QTYPE` to its answer section field `TYPE` as 2-byte big-endian int
+        - copy the bytes from `dns_reply`'s question section field `QCLASS` to its answer section field `CLASS` as 2-byte big-endian int
+        - set random positive int value 60 to `dns_reply`'s answer section field `TTL` as bytes as 4-byte big-endian int
+        - set random IPv4 address as string `8.8.8.8` to `dns_reply`'s answer section field `RDATA` as 4-byte big-endian int
+        - set length of `dns_reply`'s answer section field `RDATA` as 4-byte big-endian int
+    - send `dns_reply` back to the `udp_packet` sender client
