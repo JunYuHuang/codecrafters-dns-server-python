@@ -8,5 +8,5 @@
 - [x] Write answer section
 - [x] Parse header section
 - [x] Parse question section
-- [ ] Parse compressed packet
+- [x] Parse compressed packet
 - [ ] Forwarding Server

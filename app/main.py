@@ -157,15 +157,8 @@ class DNSMessage:
             label_byte_1_str = int_to_binary_str(label_byte_1_int, 8)
             is_label_pointer = label_byte_1_str[:2] == "11"
             
+            # Found compressed question entry
             if is_label_pointer:
-                # if 1st 2 bits = `11` -> means byte 1 is 1st of 2 bytes of a label pointer
-                # - get offset index decimal `offset` converted from:
-                #   - remaining 6 bits of byte 1 + all bits of following byte 2
-                # - traverse `dns_query` from position `offset` to first encountered null byte
-                #   - push referenced label parts to `domain_labels`
-                # - build `QNAME` string from `domain_labels`
-                # - move pointer to next question entry
-                #   - set `i` = `i` + 6
                 label_byte_2_int = int.from_bytes(dns_query[i + 1:i + 2], byteorder='big')
                 offset = int("00" + label_byte_1_str[2:], 2) + label_byte_2_int
                 while offset < dns_query_length and dns_query[offset:offset + 1] != b'\x00':
@@ -189,8 +182,8 @@ class DNSMessage:
 
                 i += 6
                 questions_left -= 1
+            # Found normal, uncompressed question entry
             else:
-                # else byte 1 is the length of the following byte-encoded label
                 label_length = label_byte_1_int
                 domain_labels.append(dns_query[i + 1:i + label_length + 1].decode())
                 i = i + label_length + 1
@@ -213,7 +206,7 @@ class DNSMessage:
             answer["RDLENGTH"] = len(answer["RDATA"].split("."))
             self.add_answer(answer)
 
-        self.set_header({ "ANCOUNT": 1 })
+        self.set_header({ "ANCOUNT": len(self.answers) })
 
     def header_bytes(self) -> bytes:
         ID_bytes = self.header["ID"].to_bytes(length=2, byteorder='big')
