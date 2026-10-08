@@ -118,7 +118,7 @@ class DNSMessage:
 
         self.set_header(data)
 
-    # TODO: rework to parse multiple questions
+    # TODO: to test
     def build_questions_from(self, dns_query: bytes) -> None:
         dns_query_length = len(dns_query)
         if dns_query_length <= HEADER_BYTES:
@@ -128,14 +128,14 @@ class DNSMessage:
         question: dict = {}
         domain_labels = []      
         i = HEADER_BYTES
-        questions_count = self.header["QDCOUNT"]
+        questions_left = self.header["QDCOUNT"]
 
-        while i < dns_query_length and questions_count > 0:
+        while i < dns_query_length and questions_left > 0:
             # In question section, reached end of last entry (null byte)
             # Last entry is followed by 4 bytes = `QTYPE` (2B) + `QCLASS` (2B)
             if dns_query[i:i + 1] == b'\x00':
                 # Add question entry
-                question["QNAME"] = ".".join(domain_labels)
+                question["QNAME"] = "." if not domain_labels else ".".join(domain_labels)
                 question["QTYPE"] = int.from_bytes(
                     dns_query[i + 1:i + 3], byteorder='big'
                 )
@@ -150,12 +150,50 @@ class DNSMessage:
                 # ahead (current entry's `QTYPE` (2B) + `QCLASS` (2B) + first
                 # length byte of next entry))
                 i += 5
-                questions_count -= 1
+                questions_left -= 1
                 continue
 
-            label_length = int.from_bytes(dns_query[i:i + 1], byteorder='big')
-            domain_labels.append(dns_query[i + 1:i + label_length + 1].decode())
-            i = i + label_length + 1
+            label_byte_1_int = int.from_bytes(dns_query[i:i + 1], byteorder='big')
+            label_byte_1_str = int_to_binary_str(label_byte_1_int, 8)
+            is_label_pointer = label_byte_1_str[:2] == "11"
+            
+            if is_label_pointer:
+                # if 1st 2 bits = `11` -> means byte 1 is 1st of 2 bytes of a label pointer
+                # - get offset index decimal `offset` converted from:
+                #   - remaining 6 bits of byte 1 + all bits of following byte 2
+                # - traverse `dns_query` from position `offset` to first encountered null byte
+                #   - push referenced label parts to `domain_labels`
+                # - build `QNAME` string from `domain_labels`
+                # - move pointer to next question entry
+                #   - set `i` = `i` + 6
+                label_byte_2_int = int.from_bytes(dns_query[i + 1:i + 2], byteorder='big')
+                offset = int("00" + label_byte_1_str[2:], 2) + label_byte_2_int
+                while offset < dns_query_length and dns_query[offset:offset + 1] != b'\x00':
+                    label_length = int.from_bytes(dns_query[offset:offset + 1], byteorder='big')
+                    domain_labels.append(
+                        dns_query[offset + 1:offset + label_length + 1].decode()
+                    )
+                    offset = offset + label_length + 1
+
+                # Add question entry
+                question["QNAME"] = "." if not domain_labels else ".".join(domain_labels)
+                question["QTYPE"] = int.from_bytes(
+                    dns_query[i + 2:i + 4], byteorder='big'
+                )
+                question["QCLASS"] = int.from_bytes(
+                    dns_query[i + 4:i + 6], byteorder='big'
+                )
+                self.add_question(question)
+                question = {}
+                domain_labels = []
+
+                i += 6
+                questions_left -= 1
+            else:
+                # else byte 1 is the length of the following byte-encoded label
+                label_length = label_byte_1_int
+                domain_labels.append(dns_query[i + 1:i + label_length + 1].decode())
+                i = i + label_length + 1
 
         self.set_header({ "QDCOUNT": len(self.questions) })
 
