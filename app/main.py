@@ -23,7 +23,6 @@ def int_to_binary_str(integer: int, bit_length: int = 0) -> str:
         bit_length = 0
     return format(integer, f"0{bit_length}b")
 
-# TODO: to test
 def has_dns_resolver(argv: list[str]):
     if len(argv) != 3:
         return False
@@ -40,14 +39,10 @@ def has_dns_resolver(argv: list[str]):
         return False
     return True
 
-# TODO: to test
 def create_dns_packet_id(bit_length: int = 16) -> int:
     if type(bit_length) != int or bit_length < 1:
         bit_length = 16
-    max_int = 0
-    for n in range(bit_length):
-        max_int += 2 ** bit_length
-    return random.randint(0, max_int)
+    return random.randint(0, (2 ** bit_length - 1))
 
 # See RFC 1035 for details: https://www.rfc-editor.org/info/rfc1035/#section-4.1
 class DNSMessage:
@@ -57,7 +52,7 @@ class DNSMessage:
         #
         self.header: dict = {
             "ID": 0,        # packet identifier (16 bits = 2 bytes)
-            "QR": 1,        # query / response indicator (1 bit)
+            "QR": 1,        # query (0) / response (1) indicator (1 bit)
             "OPCODE": 0,    # operation code (4 bits)
             "AA": 0,        # authoritative answer (1 bit)
             "TC": 0,        # truncation (1 bit)
@@ -118,14 +113,14 @@ class DNSMessage:
         else:
             self.answers[index] = entry
 
-    def build_header_from(self, dns_query: bytes) -> None:
+    def build_header_from(self, dns_message: bytes) -> None:
         data: dict = {}
-        data["ID"] = int.from_bytes(dns_query[:2], byteorder='big')
+        data["ID"] = int.from_bytes(dns_message[:2], byteorder='big')
 
-        # Extract flag bits from byte 3 in `dns_query`
-        byte_3 = int.from_bytes(dns_query[2:3], byteorder='big')
+        # Extract flag bits from byte 3 in `dns_message`
+        byte_3 = int.from_bytes(dns_message[2:3], byteorder='big')
         byte_3_str = int_to_binary_str(byte_3, 8)
-        data["QR"] = 1
+        data["QR"] = int(byte_3_str[0:1], 2)
         data["OPCODE"] = int(byte_3_str[1:5], 2)
         data["AA"] = 0
         data["TC"] = 0
@@ -136,20 +131,20 @@ class DNSMessage:
         data["Z"] = 0
         data["RCODE"] = 0 if data["OPCODE"] == 0 else 4
 
-        data["QDCOUNT"] = int.from_bytes(dns_query[4:6], byteorder='big')
-        data["ANCOUNT"] = int.from_bytes(dns_query[6:8], byteorder='big')
+        data["QDCOUNT"] = int.from_bytes(dns_message[4:6], byteorder='big')
+        data["ANCOUNT"] = int.from_bytes(dns_message[6:8], byteorder='big')
         data["NSCOUNT"] = int.from_bytes(
-            dns_query[8:10], byteorder='big'
+            dns_message[8:10], byteorder='big'
         )
         data["ARCOUNT"] = int.from_bytes(
-            dns_query[10:12], byteorder='big'
+            dns_message[10:12], byteorder='big'
         )
 
         self.set_header(data)
 
-    def build_questions_from(self, dns_query: bytes) -> None:
-        dns_query_length = len(dns_query)
-        if dns_query_length <= HEADER_BYTES:
+    def build_questions_from(self, dns_message: bytes) -> None:
+        dns_message_length = len(dns_message)
+        if dns_message_length <= HEADER_BYTES:
             return
 
         # Traverse bytes in Question section  
@@ -158,17 +153,17 @@ class DNSMessage:
         i = HEADER_BYTES
         questions_left = self.header["QDCOUNT"]
 
-        while i < dns_query_length and questions_left > 0:
+        while i < dns_message_length and questions_left > 0:
             # In question section, reached end of last entry (null byte)
             # Last entry is followed by 4 bytes = `QTYPE` (2B) + `QCLASS` (2B)
-            if dns_query[i:i + 1] == b'\x00':
+            if dns_message[i:i + 1] == b'\x00':
                 # Add question entry
                 question["QNAME"] = "." if not domain_labels else ".".join(domain_labels)
                 question["QTYPE"] = int.from_bytes(
-                    dns_query[i + 1:i + 3], byteorder='big'
+                    dns_message[i + 1:i + 3], byteorder='big'
                 )
                 question["QCLASS"] = int.from_bytes(
-                    dns_query[i + 3:i + 5], byteorder='big'
+                    dns_message[i + 3:i + 5], byteorder='big'
                 )
                 self.add_question(question)
                 question = {}
@@ -181,28 +176,35 @@ class DNSMessage:
                 questions_left -= 1
                 continue
 
-            label_byte_1_int = int.from_bytes(dns_query[i:i + 1], byteorder='big')
+            label_byte_1_int = int.from_bytes(dns_message[i:i + 1], byteorder='big')
             label_byte_1_str = int_to_binary_str(label_byte_1_int, 8)
             is_label_pointer = label_byte_1_str[:2] == "11"
             
             # Found compressed question entry
             if is_label_pointer:
-                label_byte_2_int = int.from_bytes(dns_query[i + 1:i + 2], byteorder='big')
+                label_byte_2_int = int.from_bytes(
+                    dns_message[i + 1:i + 2], byteorder='big'
+                )
                 offset = int("00" + label_byte_1_str[2:], 2) + label_byte_2_int
-                while offset < dns_query_length and dns_query[offset:offset + 1] != b'\x00':
-                    label_length = int.from_bytes(dns_query[offset:offset + 1], byteorder='big')
+                while (
+                    offset < dns_message_length and
+                    dns_message[offset:offset + 1] != b'\x00'
+                ):
+                    label_length = int.from_bytes(
+                        dns_message[offset:offset + 1], byteorder='big'
+                    )
                     domain_labels.append(
-                        dns_query[offset + 1:offset + label_length + 1].decode()
+                        dns_message[offset + 1:offset + label_length + 1].decode()
                     )
                     offset = offset + label_length + 1
 
                 # Add question entry
                 question["QNAME"] = "." if not domain_labels else ".".join(domain_labels)
                 question["QTYPE"] = int.from_bytes(
-                    dns_query[i + 2:i + 4], byteorder='big'
+                    dns_message[i + 2:i + 4], byteorder='big'
                 )
                 question["QCLASS"] = int.from_bytes(
-                    dns_query[i + 4:i + 6], byteorder='big'
+                    dns_message[i + 4:i + 6], byteorder='big'
                 )
                 self.add_question(question)
                 question = {}
@@ -213,13 +215,15 @@ class DNSMessage:
             # Found normal, uncompressed question entry
             else:
                 label_length = label_byte_1_int
-                domain_labels.append(dns_query[i + 1:i + label_length + 1].decode())
+                domain_labels.append(
+                    dns_message[i + 1:i + label_length + 1].decode()
+                )
                 i = i + label_length + 1
 
         self.set_header({ "QDCOUNT": len(self.questions) })
 
-    def build_dummy_answers(self, dns_query: bytes) -> None:
-        if len(dns_query) <= HEADER_BYTES:
+    def build_dummy_answers(self, dns_message: bytes) -> None:
+        if len(dns_message) <= HEADER_BYTES:
             print("Error: DNS message has header only")
             return
 
@@ -236,14 +240,15 @@ class DNSMessage:
 
         self.set_header({ "ANCOUNT": len(self.answers) })
 
-    # TODO: to implement and test
+     # TODO: to fix
     def build_real_answer(self, dns_response: bytes) -> None:
         dns_response_length = len(dns_response)
         if dns_response_length <= HEADER_BYTES:
             print("Error: DNS message has header only")
             return
 
-        i = HEADER_BYTES + len(self.question_bytes())
+        # TODO: to fix
+        i = HEADER_BYTES + len(self.question_bytes(dns_response_length))
         answer = {}
         domain_labels = []
 
@@ -324,8 +329,8 @@ class DNSMessage:
             ANCOUNT_bytes + NSCOUNT_bytes + ARCOUNT_bytes
         )
 
-    def question_bytes(self, dns_query_size: int) -> bytes:
-        if dns_query_size <= HEADER_BYTES:
+    def question_bytes(self, dns_message_size: int) -> bytes:
+        if dns_message_size <= HEADER_BYTES:
             return b''
 
         res = b''
@@ -344,8 +349,8 @@ class DNSMessage:
 
         return res
 
-    def answer_bytes(self, dns_query_size: int) -> bytes:
-        if dns_query_size <= HEADER_BYTES:
+    def answer_bytes(self, dns_message_size: int) -> bytes:
+        if dns_message_size <= HEADER_BYTES:
             return b''
 
         res = b''
@@ -407,100 +412,111 @@ class DNSMessage:
 def main():
     server_udp_socket: socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     server_udp_socket.bind((HOST, PORT))
-    print(f"==> DNS Server listening to client at {HOST}:{PORT}")
+    print(f"==> DNS Server listening to clients at {server_udp_socket.getsockname()}")
 
-    resolver_ipv4 = ""
-    resolver_port = ""
+    resolver_address: tuple = ()
     client_udp_socket: socket = None
     is_forwarding_queries = has_dns_resolver(sys.argv)
 
     if is_forwarding_queries:
         resolver_ipv4, resolver_port = sys.argv[2].split(":")
-        print(f"==> DNS Resolver at {resolver_ipv4}:{resolver_port}")
+        resolver_address = (resolver_ipv4, int(resolver_port))
+        print(f"==> DNS Resolver is at {resolver_address}")
 
         client_udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        client_udp_socket.settimeout(5)
 
-        # Port 0 will let OS pick a free ephemeral port
-        client_udp_socket.bind((HOST, 0))
-        print(f"==> DNS Server listening to upstream DNS resolver at {HOST}:<unknown_port>")
-
+        # Socket address tuple `("", 0)` asks OS to choose an available
+        # local IP address and available network port
+        client_udp_socket.bind(("", 0))
+        print((
+            "==> DNS Server listening to upstream DNS resolver at " +
+            f"{client_udp_socket.getsockname()}" 
+        ))
+    
     while True:
-        # `query_bytes`: bytes of the sender's DNS message query
+        # `query_bytes`: bytes
         # `source`: (host: string, port: integer) because is a AF_INET socket (IPv4)
         query_bytes, source = server_udp_socket.recvfrom(BUFFER_SIZE)
+        query_bytes_length = len(query_bytes)
 
         response_obj = DNSMessage()
         response_obj.build_header_from(query_bytes)
+        response_obj.set_header({ "QR": 1 })
         response_obj.build_questions_from(query_bytes)
-
-        query_bytes_length = len(query_bytes)
-        response_bytes: bytes = response_obj.header_bytes()
-        response_bytes += response_obj.question_bytes(query_bytes_length)
 
         if is_forwarding_queries:
             for question in response_obj.questions:
                 # Build DNS query to forward to DNS resolver server
                 forwarded_query_obj = DNSMessage()
                 forwarded_query_obj.build_header_from(query_bytes)
-                forwarded_query_obj.set_header({ "QDCOUNT": 1, "ID": create_dns_packet_id() })
+                forwarded_query_obj.set_header(
+                    { "ID": create_dns_packet_id(), "QR": 0, "QDCOUNT": 1 }
+                )
                 forwarded_query_obj.add_question(question)
-                forwarded_query_bytes = forwarded_query_obj.header_bytes()
-                forwarded_query_bytes += forwarded_query_obj.question_bytes()
+                forwarded_query_bytes: bytes = forwarded_query_obj.header_bytes()
+                forwarded_query_bytes += forwarded_query_obj.question_bytes(
+                    query_bytes_length
+                )
 
                 # DEBUG logs
-                print("==> To DNS resolver: DNS message query header:")
+                print((
+                    "==> To DNS resolver: DNS message query (header + " +
+                    "question + answer) deserialized & as bytes:"
+                ))
                 print(forwarded_query_obj.header_entries())
-                print("==> To DNS resolver: DNS message query question:")
                 print(forwarded_query_obj.question_entries())
-                print("==> To DNS resolver: DNS message query answer:")
                 print(forwarded_query_obj.answer_entries())
-                print("==> To DNS resolver: Sent DNS query response:")
                 print(forwarded_query_bytes)
 
-                # TODO: send query to DNS resolver at `{resolver_ipv4}:{resolver_port}`
-                client_udp_socket.sendto(
-                    forwarded_query_bytes, (resolver_ipv4, int(resolver_port))
-                )
+                # Send query to DNS resolver
+                print(f"==> DNS resolver address: {resolver_address}")
+                client_udp_socket.sendto(forwarded_query_bytes, resolver_address)
                 forwarded_response_bytes, dns_resolver = client_udp_socket.recvfrom(BUFFER_SIZE)
                 
                 # Build DNS response from DNS resolver server
                 forwarded_response_obj = DNSMessage()
                 forwarded_response_obj.build_header_from(forwarded_response_bytes)
-                forwarded_response_obj.build_questions_from(forwarded_response_bytes)
-                forwarded_response_obj.build_real_answer(forwarded_response_bytes)
+                forwarded_response_obj.build_questions_from(
+                    forwarded_response_bytes
+                )
 
-                # Add answer entry to DNS response to send to original sender
+                # TODO: fix method `DNSMessage.build_real_answer()`
+                # forwarded_response_obj.build_real_answer(forwarded_response_bytes)
+
+                # # Add answer entry to DNS response to send to original sender
                 # response_obj.add_answer(forwarded_response_obj.answers[-1])
-                # response_obj.set_header({ "ANCOUNT": len(response_obj.answers) })
                 
                 # DEBUG logs
-                print("==> From DNS resolver: DNS message response header:")
+                print((
+                    "==> From DNS resolver: DNS message response (header + " +
+                    "question + answer) deserialized & as bytes:"
+                ))
                 print(forwarded_response_obj.header_entries())
-                print("==> From DNS resolver: DNS message response question:")
                 print(forwarded_response_obj.question_entries())
-                print("==> From DNS resolver: DNS message response answer:")
                 print(forwarded_response_obj.answer_entries())
-                print("==> From DNS resolver: Sent DNS response response:")
                 print(forwarded_response_bytes)
 
             # TODO: Comment out below line once we verify received DNS response
             # from DNS resolver is parsed correctly
-            response_obj.build_dummy_answers(query_bytes)
+            # response_obj.build_real_answer(forwarded_response_bytes)
         else:
             response_obj.build_dummy_answers(query_bytes)
 
+        response_bytes: bytes = response_obj.header_bytes()
+        response_bytes += response_obj.question_bytes(query_bytes_length)
         response_bytes += response_obj.answer_bytes(query_bytes_length)
 
         server_udp_socket.sendto(response_bytes, source)
 
         # DEBUG logs
-        print("==> DNS message response header:")
+        print((
+            "==> To client: DNS message response (header + " +
+            "question + answer) deserialized & as bytes:"
+        ))
         print(response_obj.header_entries())
-        print("==> DNS message response question:")
         print(response_obj.question_entries())
-        print("==> DNS message response answer:")
         print(response_obj.answer_entries())
-        print("==> Sent DNS message response:")
         print(response_bytes)
 
 if __name__ == "__main__":
