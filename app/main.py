@@ -131,8 +131,6 @@ class DNSMessage:
         # Set flag bits for byte 4 in DNS reply
         data["RA"] = 0
         data["Z"] = 0
-
-        # TODO: to fix?
         data["RCODE"] = 0 if data["OPCODE"] == 0 else 4
 
         data["QDCOUNT"] = int.from_bytes(dns_message[4:6], byteorder='big')

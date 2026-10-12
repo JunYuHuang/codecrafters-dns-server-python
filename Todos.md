@@ -9,4 +9,4 @@
 - [x] Parse header section
 - [x] Parse question section
 - [x] Parse compressed packet
-- [ ] Forwarding Server
+- [x] Forwarding Server
