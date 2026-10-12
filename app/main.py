@@ -131,6 +131,8 @@ class DNSMessage:
         # Set flag bits for byte 4 in DNS reply
         data["RA"] = 0
         data["Z"] = 0
+
+        # TODO: to fix?
         data["RCODE"] = 0 if data["OPCODE"] == 0 else 4
 
         data["QDCOUNT"] = int.from_bytes(dns_message[4:6], byteorder='big')
@@ -146,7 +148,8 @@ class DNSMessage:
 
     def build_questions_from(self, dns_message: bytes) -> None:
         dns_message_length = len(dns_message)
-        if dns_message_length <= HEADER_BYTES:
+        if dns_message_length <= HEADER_BYTES or not self.header["QDCOUNT"]:
+            print("[Error]  No questions to build from")
             return
 
         # Traverse bytes in Question section  
@@ -228,8 +231,8 @@ class DNSMessage:
                 i = i + label_length + 1
 
     def build_dummy_answers(self, dns_message: bytes) -> None:
-        if len(dns_message) <= HEADER_BYTES:
-            print("Error: DNS message has header only")
+        if len(dns_message) <= HEADER_BYTES or not self.questions:
+            print("[Error]  No questions in DNS message to build dummy answers from")
             return
 
         for question in self.questions:
@@ -246,10 +249,10 @@ class DNSMessage:
     def build_real_answer(self, dns_response: bytes) -> None:
         dns_response_length = len(dns_response)
         if dns_response_length <= HEADER_BYTES:
-            print("Error: DNS message has header only")
+            print("[Error] Failed to build real answers: header only")
             return
         if self.header["QDCOUNT"] < 1 or len(self.questions) < 1:
-            print("Error: DNS message has no question section")
+            print("[Error] Failed to build real answers: no question section")
             return
 
         i = self.questions[-1]["end_pos"] + 1
@@ -398,7 +401,7 @@ class DNSMessage:
         )
 
     def question_bytes(self, dns_message_size: int) -> bytes:
-        if dns_message_size <= HEADER_BYTES:
+        if dns_message_size <= HEADER_BYTES or not self.questions:
             return b''
 
         res = b''
@@ -418,7 +421,7 @@ class DNSMessage:
         return res
 
     def answer_bytes(self, dns_message_size: int) -> bytes:
-        if dns_message_size <= HEADER_BYTES:
+        if dns_message_size <= HEADER_BYTES or not self.answers:
             return b''
 
         res = b''
@@ -511,7 +514,8 @@ def main():
         response_obj = DNSMessage()
         response_obj.build_header_from(query_bytes)
         response_obj.set_header({ "QR": 1 })
-        response_obj.build_questions_from(query_bytes)
+        if response_obj.header["QDCOUNT"] > 0:
+            response_obj.build_questions_from(query_bytes)
 
         if is_forwarding_queries:
             for question in response_obj.questions:
@@ -544,13 +548,16 @@ def main():
                 # Build DNS response from DNS resolver server
                 forwarded_response_obj = DNSMessage()
                 forwarded_response_obj.build_header_from(forwarded_response_bytes)
-                forwarded_response_obj.build_questions_from(
-                    forwarded_response_bytes
-                )
-                forwarded_response_obj.build_real_answer(forwarded_response_bytes)
-
-                # Add answer entry to DNS response to send to original sender
-                response_obj.add_answer(forwarded_response_obj.answers[-1])
+                if forwarded_response_obj.header["QDCOUNT"] > 0:
+                    forwarded_response_obj.build_questions_from(
+                        forwarded_response_bytes
+                    )
+                if forwarded_response_obj.header["ANCOUNT"] > 0:
+                    forwarded_response_obj.build_real_answer(
+                        forwarded_response_bytes
+                    )
+                    # Add answer entry to DNS response to send to original sender
+                    response_obj.add_answer(forwarded_response_obj.answers[-1])
                 
                 # DEBUG logs
                 print((
@@ -573,7 +580,7 @@ def main():
 
         # DEBUG logs
         print((
-            "==> To DNS resolver: DNS message response bytes" +
+            "==> To DNS client: DNS message response bytes" +
             " & deserialized (header + question + answer):"
         ))
         print(response_bytes)
