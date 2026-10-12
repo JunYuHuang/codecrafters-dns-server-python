@@ -18,9 +18,9 @@ BUFFER_SIZE = 512
 #
 # HELPER FUNCTIONS
 #
-def int_to_binary_str(integer: int, bit_length: int = 0) -> str:
-    if type(bit_length) != int or bit_length < 0:
-        bit_length = 0
+def int_to_binary_str(integer: int, bit_length: int = 1) -> str:
+    if type(bit_length) != int or bit_length <= 0:
+        bit_length = 1
     return format(integer, f"0{bit_length}b")
 
 def has_dns_resolver(argv: list[str]):
@@ -113,7 +113,7 @@ class DNSMessage:
             self.answers.append(entry)
         else:
             self.answers[index] = entry
-        self.set_header({ "ANCOUNT": len(self.questions) })
+        self.set_header({ "ANCOUNT": len(self.answers) })
 
     def build_header_from(self, dns_message: bytes) -> None:
         data: dict = {}
@@ -150,7 +150,7 @@ class DNSMessage:
             return
 
         # Traverse bytes in Question section  
-        question: dict = {}
+        question = {}
         domain_labels = []      
         i = HEADER_BYTES
         questions_left = self.header["QDCOUNT"]
@@ -169,13 +169,13 @@ class DNSMessage:
                 question["QCLASS"] = int.from_bytes(
                     dns_message[i + 3:i + 5], byteorder='big'
                 )
+                question["end_pos"] = i + 4
                 self.add_question(question)
                 question = {}
                 domain_labels = []
 
-                # Go to next (uncompressed) question entry which is 5 positions
-                # ahead (current entry's `QTYPE` (2B) + `QCLASS` (2B) + first
-                # length byte of next entry))
+                # Go to next question entry's 1st byte which is 5 positions ahead:
+                # 5 = `QTYPE` (2) + `QCLASS` (2) + next `QNAME[0]` (1)
                 i += 5
                 questions_left -= 1
                 continue
@@ -210,10 +210,13 @@ class DNSMessage:
                 question["QCLASS"] = int.from_bytes(
                     dns_message[i + 4:i + 6], byteorder='big'
                 )
+                question["end_pos"] = i + 5
                 self.add_question(question)
                 question = {}
                 domain_labels = []
 
+                # Go to next question entry's 1st byte which is 6 positions ahead:
+                # 6 = label pointer byte 2 (1) + `QTYPE` (2) + `QCLASS` (2) + next `QNAME[0]` (1)
                 i += 6
                 questions_left -= 1
             # Found normal, uncompressed question entry
@@ -240,90 +243,128 @@ class DNSMessage:
             answer["RDLENGTH"] = len(answer["RDATA"].split("."))
             self.add_answer(answer)
 
-    # Assumes `dns_response` has 1 answer entry only
     def build_real_answer(self, dns_response: bytes) -> None:
         dns_response_length = len(dns_response)
         if dns_response_length <= HEADER_BYTES:
             print("Error: DNS message has header only")
             return
+        if self.header["QDCOUNT"] < 1 or len(self.questions) < 1:
+            print("Error: DNS message has no question section")
+            return
 
-        # Handles both uncompressed and uncompressed `NAME` fields per 
-        # RFC 1035 section 4.1.4: https://www.rfc-editor.org/info/rfc1035/#section-4.1.4
-        i = HEADER_BYTES + len(self.question_bytes(dns_response_length))
-        answer_byte_1_int = int.from_bytes(dns_response[i:i + 1], byteorder='big')
-        answer_byte_1_str = int_to_binary_str(answer_byte_1_int)
-
-        # true if `dns_response` message is compressed
-        is_label_pointer = answer_byte_1_str[:2] == "11"
-
+        i = self.questions[-1]["end_pos"] + 1
         answer = {}
         domain_labels = []
+        answers_left = self.header["ANCOUNT"]
 
-        if is_label_pointer:
-            answer_byte_2_int = int.from_bytes(dns_response[i + 1:i + 2], byteorder='big')
-            offset = int("00" + answer_byte_1_str[2:], 2) + answer_byte_2_int
-            while (
-                offset < dns_response_length and
-                dns_response[offset:offset + 1] != b'\x00'
-            ):
-                label_length = int.from_bytes(
-                    dns_response[offset:offset + 1], byteorder='big'
+        while i < dns_response_length and answers_left > 0:
+            # In answer section, reached end of last label in domain name (null byte)
+            # Domain name field `NAME` is followed by these fields in order:
+            # - `TYPE` (2 bytes)
+            # - `CLASS` (2 bytes)
+            # - `TTL` (4 bytes)
+            # - `RDLENGTH` (2 bytes)
+            # - `RDATA` (variable-length bytes -> 4 bytes for A-records)
+            if dns_response[i:i + 1] == b'\x00':
+                # Add answer entry
+                answer["NAME"] = "." if not domain_labels else ".".join(domain_labels)
+                answer["TYPE"] = int.from_bytes(
+                    dns_response[i + 1:i + 3], byteorder='big'
                 )
+                answer["CLASS"] = int.from_bytes(
+                    dns_response[i + 3:i + 5], byteorder='big'
+                )
+                answer["TTL"] = int.from_bytes(
+                    dns_response[i + 5:i + 9], byteorder='big'
+                )
+                answer["RDLENGTH"] = int.from_bytes(
+                    dns_response[i + 9:i + 11], byteorder='big'
+                )
+
+                # From `NAME[-1]`, jump 11 (byte) positions to `RDATA[0]`
+                # 11 = TYPE (2) + CLASS (2) + TTL (4) + RDLENGTH (2) + RDATA[0] (1)
+                ipv4_octets = []
+                i += 11
+                for j in range(answer["RDLENGTH"]):
+                    ipv4_octets.append(str(
+                        int.from_bytes(dns_response[i + j:i + j + 1], byteorder='big')
+                    ))
+                answer["RDATA"] = ".".join(ipv4_octets)
+                self.add_answer(answer)
+                answer = {}
+                domain_labels = []
+
+                # From `RDATA[0]`, jump 4 (byte) positions to next `NAME[0]`
+                # 4 = `RDATA[1..3]` (3) + next `NAME[0]` (1)
+                # `RDATA` is 4 bytes b/c program only handles A-records
+                i += 4
+                answers_left -= 1
+                continue
+    
+            byte_1_int = int.from_bytes(dns_response[i:i + 1], byteorder='big')
+            byte_1_str = int_to_binary_str(byte_1_int, 8)
+            is_label_pointer = byte_1_str[:2] == "11"
+
+            # compressed answer entry
+            if is_label_pointer:
+                byte_2_int = int.from_bytes(dns_response[i + 1:i + 2], byteorder='big')
+                offset = int("00" + byte_1_str[2:], 2) + byte_2_int
+                while (
+                    offset < dns_response_length and
+                    dns_response[offset:offset + 1] != b'\x00'
+                ):
+                    label_length = int.from_bytes(
+                        dns_response[offset:offset + 1], byteorder='big'
+                    )
+                    domain_labels.append(
+                        dns_response[offset + 1:offset + label_length + 1].decode()
+                    )
+                    offset = offset + label_length + 1
+
+                # Add answer entry
+                answer["NAME"] = "." if not domain_labels else ".".join(domain_labels)
+
+                # At position of label pointer byte 1 (i.e., `NAME[0]`)
+                answer["TYPE"] = int.from_bytes(
+                    dns_response[i + 2:i + 4], byteorder='big'
+                )
+                answer["CLASS"] = int.from_bytes(
+                    dns_response[i + 4:i + 6], byteorder='big'
+                )
+                answer["TTL"] = int.from_bytes(
+                    dns_response[i + 6:i + 10], byteorder='big'
+                )
+                answer["RDLENGTH"] = int.from_bytes(
+                    dns_response[i + 10:i + 12], byteorder='big'
+                )
+
+                # From `NAME[0]` (label pointer byte 1), jump 12 (byte) positions
+                # to `RDATA[0]`:
+                # 12 = NAME[1] (1) + TYPE (2) + CLASS (2) + TTL (4) +
+                #      RDLENGTH (2) + RDATA[0] (1)
+                ipv4_octets = []
+                i += 12
+                for j in range(answer["RDLENGTH"]):
+                    ipv4_octets.append(str(
+                        int.from_bytes(dns_response[i + j:i + j + 1], byteorder='big')
+                    ))
+                answer["RDATA"] = ".".join(ipv4_octets)
+                self.add_answer(answer)
+                answer = {}
+                domain_labels = []
+
+                # From `RDATA[0]`, jump 4 (byte) positions to next `NAME[0]`
+                # 4 = `RDATA[1..3]` (3) + next `NAME[0]` (1)
+                # `RDATA` is 4 bytes b/c program only handles A-records
+                i += 4
+                answers_left -= 1
+            # uncompressed answer entry
+            else:
+                label_length = byte_1_int
                 domain_labels.append(
-                    dns_response[offset + 1:offset + label_length + 1].decode()
+                    dns_response[i + 1:i + label_length + 1].decode()
                 )
-                offset = offset + label_length + 1
-            
-            # Move index to 2nd byte of 2-Byte label pointer
-            i += 1
-        else:
-            while (not is_label_pointer and i < dns_response_length):
-                # In answer section, reached end of last label in domain name (null byte)
-                # Domain name field `NAME` is followed by the following in order:
-                # - `TYPE` (2 bytes)
-                # - `CLASS` (2 bytes)
-                # - `TTL` (4 bytes)
-                # - `RDLENGTH` (2 bytes)
-                # - `RDATA` (variable-length bytes)
-                if dns_response[i:i + 1] == b'\x00':
-                    break
-
-                label_length = int.from_bytes(dns_response[i:i + 1], byteorder='big')
-                domain_labels.append(dns_response[i + 1:i + label_length + 1].decode())
                 i = i + label_length + 1
-
-        # Add answer entry
-        answer["NAME"] = "." if not domain_labels else ".".join(domain_labels)
-        answer["TYPE"] = int.from_bytes(
-            dns_response[i + 1:i + 3], byteorder='big'
-        )
-        answer["CLASS"] = int.from_bytes(
-            dns_response[i + 3:i + 5], byteorder='big'
-        )
-        answer["TTL"] = int.from_bytes(
-            dns_response[i + 5:i + 9], byteorder='big'
-        )
-
-        # Should always be 4 because we assume answer entry is always an
-        # A-record
-        answer["RDLENGTH"] = int.from_bytes(
-            dns_response[i + 9:i + 11], byteorder='big'
-        )
-
-        # Deserialize `RDATA` bytes into an IPv4 address string because we assume
-        # `dns_response` always contains an A-record answer entry
-        ipv4_octets = []
-
-        # Jump 11 (byte) positions forward because at 2nd byte of label pointer and
-        # 11 = TYPE (2) + CLASS (2) + TTL (4) + RDLENGTH (2) + RDATA[0] (1)
-        i += 11
-        for j in range(answer["RDLENGTH"]):
-            ipv4_octets.append(str
-                (int.from_bytes(dns_response[i + j:i + j + 1], byteorder='big')
-            ))
-        answer["RDATA"] = ".".join(ipv4_octets)
-
-        self.add_answer(answer)
 
     def header_bytes(self) -> bytes:
         ID_bytes = self.header["ID"].to_bytes(length=2, byteorder='big')
@@ -418,7 +459,7 @@ class DNSMessage:
 
     def question_entries(self) -> dict:
         res = []
-        keys = ["QNAME", "QTYPE", "QCLASS"]
+        keys = ["QNAME", "QTYPE", "QCLASS", "end_pos"]
         for question in self.questions:
             entry = {}
             for key in keys:
@@ -488,16 +529,15 @@ def main():
 
                 # DEBUG logs
                 print((
-                    "==> To DNS resolver: DNS message query (header + " +
-                    "question + answer) deserialized & as bytes:"
+                    "==> To DNS resolver: DNS message query bytes" +
+                    " & deserialized (header + question + answer):"
                 ))
+                print(forwarded_query_bytes)
+                print(f"{len(forwarded_query_bytes)} Bytes")
                 print(forwarded_query_obj.header_entries())
                 print(forwarded_query_obj.question_entries())
                 print(forwarded_query_obj.answer_entries())
-                print(forwarded_query_bytes)
 
-                # Send query to DNS resolver
-                print(f"==> DNS resolver address: {resolver_address}")
                 client_udp_socket.sendto(forwarded_query_bytes, resolver_address)
                 forwarded_response_bytes, dns_resolver = client_udp_socket.recvfrom(BUFFER_SIZE)
                 
@@ -514,13 +554,14 @@ def main():
                 
                 # DEBUG logs
                 print((
-                    "==> From DNS resolver: DNS message response (header + " +
-                    "question + answer) deserialized & as bytes:"
+                    "==> From DNS resolver: DNS message response bytes" +
+                    " & deserialized (header + question + answer):"
                 ))
+                print(forwarded_response_bytes)
+                print(f"{len(forwarded_response_bytes)} Bytes")
                 print(forwarded_response_obj.header_entries())
                 print(forwarded_response_obj.question_entries())
                 print(forwarded_response_obj.answer_entries())
-                print(forwarded_response_bytes)
         else:
             response_obj.build_dummy_answers(query_bytes)
 
@@ -532,13 +573,14 @@ def main():
 
         # DEBUG logs
         print((
-            "==> To client: DNS message response (header + " +
-            "question + answer) deserialized & as bytes:"
+            "==> To DNS resolver: DNS message response bytes" +
+            " & deserialized (header + question + answer):"
         ))
+        print(response_bytes)
+        print(f"{len(response_bytes)} Bytes")
         print(response_obj.header_entries())
         print(response_obj.question_entries())
         print(response_obj.answer_entries())
-        print(response_bytes)
 
 if __name__ == "__main__":
     main()

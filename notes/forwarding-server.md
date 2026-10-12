@@ -35,6 +35,26 @@
     - questions:
         - does packet ID need to be unique for every single-question DNS query sent to the upstream DNS resolver server (instead of being copied from the sender's initial DNS query)?
             - should be yes because don't how long it will take to receive the DNS response (via UDP) from the upstream DNS resolver server
+    - DNS response (reply to DNS query from my DNS serer) from upstream DNS server
+        - contents:
+            - header: 12 Bytes
+            - question: variable Bytes
+                - guaranteed:
+                    - to have uncompressed `QNAME` field or domain name
+                        - i.e., no label pointers
+                    - to have 1 question entry
+                - has 1 entry only
+            - answer: variable Bytes
+                - can have 0 or more answer entries
+                    - see header field `ANCOUNT` value
+                    - todo: update `DNSMessage.build_real_answer()` method to handle 0 or 2+ answer entries
+                        - use 
+                - if have 2+ entries, 2nd or later entries have compressed `NAME` fields
+                    - does my code parse this correctly?
+                - where is the first index / position of where this section starts in the DNS message byte stream / array / buffer?
+        - for each question and answer entry:
+            - store position / index of where the length byte prefixing each label (i.e., `QNAME` or `NAME`) starts in the DNS message byte stream / array / buffer?
+            - store position / index of where the question or answer section ends in the DNS message byte stream / array / buffer
 - PEDAC: Examples
     - ex1. test running DNS server
         - in terminal 1:
