@@ -460,7 +460,7 @@ class DNSMessage:
 
     def question_entries(self) -> dict:
         res = []
-        keys = ["QNAME", "QTYPE", "QCLASS", "end_pos"]
+        keys = ["QNAME", "QTYPE", "QCLASS"]
         for question in self.questions:
             entry = {}
             for key in keys:
